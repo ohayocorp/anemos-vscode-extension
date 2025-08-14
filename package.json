@@ -1,0 +1,40 @@
+{
+    "name": "anemos",
+    "displayName": "Anemos",
+    "description": "Intellisense and command support for Anemos",
+    "version": "1.0.3",
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "publisher": "ohayocorp",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/ohayocorp/anemos-vscode-extension"
+    },
+    "main": "./extension.js",
+    "icon": "resources/logo.png",
+    "activationEvents": [
+        "*"
+    ],
+    "contributes": {
+        "typescriptServerPlugins": [
+            {
+                "name": "anemos-typescript-plugin",
+                "enableForWorkspaceTypeScriptVersions": true
+            }
+        ],
+        "commands": [
+            {
+                "command": "anemos.build",
+                "title": "Anemos: Build"
+            }
+        ],
+        "keybindings": [
+            {
+                "command": "anemos.build",
+                "key": "ctrl+e ctrl+a",
+                "mac": "cmd+e cmd+a"
+            }
+        ]
+    }
+}

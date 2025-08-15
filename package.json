@@ -2,7 +2,7 @@
     "name": "anemos",
     "displayName": "Anemos",
     "description": "Intellisense and command support for Anemos",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "engines": {
         "vscode": "^1.85.0"
     },

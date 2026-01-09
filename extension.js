@@ -273,6 +273,9 @@ async function getAnemosToolVersion(context) {
 
 async function generateAnemosTypes(context, outputDir) {
     try {
+        console.log(`Removing all files in ${outputDir}`);
+        fs.rmSync(outputDir, { recursive: true, force: true });
+
         console.log(`Generating Anemos type definitions in ${outputDir}`);
         const anemosPath = await ensureAnemosBinary(context);
 

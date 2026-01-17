@@ -5,12 +5,14 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const util = require('util');
+const jsonc = require('jsonc-parser');
 
 const execAsync = util.promisify(exec);
 const fsUnlink = util.promisify(fs.unlink);
 
 // Store terminal reference so it can be reused.
 let anemosTerminal = null;
+let anemosTerminalUsesPowerShell = false;
 
 async function activate(context) {
     // Check for anemos binary at extension initialization.
@@ -41,24 +43,297 @@ async function activate(context) {
 
         // Check if terminal exists, or if it has been disposed.
         if (!anemosTerminal || anemosTerminal.exitStatus !== undefined) {
-            anemosTerminal = vscode.window.createTerminal('Anemos Build');
+            anemosTerminal = createAnemosTerminal('Anemos Build');
+            anemosTerminalUsesPowerShell = process.platform === 'win32';
+        } else if (process.platform === 'win32' && !anemosTerminalUsesPowerShell) {
+            anemosTerminal.dispose();
+            anemosTerminal = createAnemosTerminal('Anemos Build');
+            anemosTerminalUsesPowerShell = true;
         }
 
         anemosTerminal.show();
 
         // Change to workspace root and run build command.
         anemosTerminal.sendText(`cd "${workspaceRoot}"`);
-        anemosTerminal.sendText(`"${anemosPath}" build index.js`);
+        if (process.platform === 'win32') {
+            anemosTerminal.sendText(`& "${anemosPath}" build "index.js"`);
+        } else {
+            anemosTerminal.sendText(`"${anemosPath}" build index.js`);
+        }
     });
 
     // Listen for terminal close events to handle terminal disposal.
     vscode.window.onDidCloseTerminal(terminal => {
         if (terminal === anemosTerminal) {
             anemosTerminal = null;
+            anemosTerminalUsesPowerShell = false;
         }
     }, null, context.subscriptions);
 
     context.subscriptions.push(buildCommand);
+
+    context.subscriptions.push(vscode.commands.registerCommand('anemos.addLaunchConfig', async function (resourceUri) {
+        const targetUri = await pickTargetJsOrTsFile(resourceUri);
+        if (!targetUri) {
+            return;
+        }
+
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(targetUri) || (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0]);
+        if (!workspaceFolder) {
+            vscode.window.showErrorMessage('No workspace folder is open.');
+            return;
+        }
+
+        try {
+            const didWrite = await ensureAnemosLaunchConfig(workspaceFolder, targetUri);
+            if (!didWrite) {
+                vscode.window.showInformationMessage('launch.json already contains an Anemos configuration.');
+                return;
+            }
+
+            const openChoice = await vscode.window.showInformationMessage('Added Anemos configuration to .vscode/launch.json.', 'Open launch.json');
+            if (openChoice === 'Open launch.json') {
+                const launchUri = vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, '.vscode', 'launch.json'));
+                const doc = await vscode.workspace.openTextDocument(launchUri);
+                await vscode.window.showTextDocument(doc);
+            }
+        } catch (e) {
+            vscode.window.showErrorMessage(`Failed to update launch.json: ${e.message}`);
+        }
+    }));
+
+    // Register a specific debug provider for 'anemos' that resolves the configuration
+    context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('anemos', {
+        provideDebugConfigurations: async (folder, token) => {
+            let programPath;
+
+            const options = {
+                canSelectMany: false,
+                openLabel: 'Select Entry File for launch.json',
+                filters: {
+                    'JavaScript/TypeScript': ['js', 'ts']
+                }
+            };
+
+            if (workspaceRoot) {
+                options.defaultUri = vscode.Uri.file(workspaceRoot);
+            }
+
+            const fileUri = await vscode.window.showOpenDialog(options);
+            if (fileUri && fileUri[0]) {
+                programPath = vscode.workspace.asRelativePath(fileUri[0], false);
+            }
+
+            // Fallback
+            if (!programPath) {
+                programPath = "${file}";
+            }
+
+            return [
+                {
+                    type: "anemos",
+                    request: "launch",
+                    name: "Anemos: Run Current File",
+                    program: programPath
+                }
+            ];
+        },
+        resolveDebugConfiguration: async (folder, config, token) => {
+            // If the program is missing, prompt for it using native dialog
+            if (!config.program) {
+                const workspaceRoot = folder ? folder.uri.fsPath : (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0 ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined);
+
+                const options = {
+                    canSelectMany: false,
+                    openLabel: 'Select Anemos Entry File',
+                    filters: {
+                        'JavaScript/TypeScript': ['js', 'ts']
+                    }
+                };
+
+                if (workspaceRoot) {
+                    options.defaultUri = vscode.Uri.file(workspaceRoot);
+                }
+
+                const fileUri = await vscode.window.showOpenDialog(options);
+                if (fileUri && fileUri[0]) {
+                    config.program = fileUri[0].fsPath;
+                } else {
+                    // User cancelled
+                    return undefined;
+                }
+            }
+
+            // Resolve the final path (handle variables like ${file} if possible, but usually resolveDebugConfigurationWithSubstitutedVariables is better for that)
+            // However, we can launch from here if we want to bypass DAP entirely.
+
+            const workspaceRoot = folder ? folder.uri.fsPath : (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0 ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined);
+
+            let anemosPath;
+            try {
+                anemosPath = await ensureAnemosBinary(context);
+            } catch {
+                vscode.window.showErrorMessage('Failed to find or download Anemos binary.');
+                return undefined;
+            }
+
+            if (!anemosTerminal || anemosTerminal.exitStatus !== undefined) {
+                anemosTerminal = createAnemosTerminal('Anemos Run');
+                anemosTerminalUsesPowerShell = process.platform === 'win32';
+            } else if (process.platform === 'win32' && !anemosTerminalUsesPowerShell) {
+                anemosTerminal.dispose();
+                anemosTerminal = createAnemosTerminal('Anemos Run');
+                anemosTerminalUsesPowerShell = true;
+            }
+            anemosTerminal.show();
+
+            const resolvedCwd = resolveCwd(workspaceRoot, config.cwd);
+            if (resolvedCwd) {
+                anemosTerminal.sendText(`cd "${resolvedCwd}"`);
+            }
+
+            const extraArgs = Array.isArray(config.args) ? config.args.filter(a => typeof a === 'string') : [];
+            if (process.platform === 'win32') {
+                const psArgs = extraArgs.map(quoteForPowerShell).join(' ');
+                const command = `& "${anemosPath}" build "${config.program}" ${psArgs}`.trimEnd();
+                anemosTerminal.sendText(command);
+            } else {
+                const argsPart = extraArgs.map(quoteForPosixShell).join(' ');
+                const command = `${quoteForPosixShell(anemosPath)} build ${quoteForPosixShell(config.program)} ${argsPart}`.trimEnd();
+                anemosTerminal.sendText(command);
+            }
+
+            return undefined; // We handled the execution, don't start a DAP session
+        }
+    }));
+}
+
+function createAnemosTerminal(name) {
+    if (process.platform === 'win32') {
+        return vscode.window.createTerminal({
+            name,
+            shellPath: 'powershell.exe',
+            shellArgs: ['-NoLogo', '-NoProfile']
+        });
+    }
+
+    return vscode.window.createTerminal(name);
+}
+
+function resolveCwd(workspaceRoot, cwd) {
+    if (typeof cwd !== 'string' || cwd.trim() === '') {
+        return workspaceRoot;
+    }
+
+    const trimmed = cwd.trim();
+
+    if (workspaceRoot) {
+        const substituted = trimmed.replaceAll('${workspaceFolder}', workspaceRoot);
+        if (path.isAbsolute(substituted)) {
+            return substituted;
+        }
+
+        return path.resolve(workspaceRoot, substituted);
+    }
+
+    return trimmed;
+}
+
+function quoteForPowerShell(value) {
+    const str = String(value);
+    return `'${str.replaceAll("'", "''")}'`;
+}
+
+function quoteForPosixShell(value) {
+    const str = String(value);
+    return `"${str.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+}
+
+async function pickTargetJsOrTsFile(resourceUri) {
+    if (resourceUri instanceof vscode.Uri) {
+        const ext = path.extname(resourceUri.fsPath).toLowerCase();
+        if (ext === '.js' || ext === '.ts') {
+            return resourceUri;
+        }
+    }
+
+    const editor = vscode.window.activeTextEditor;
+    if (editor && editor.document && editor.document.uri) {
+        const ext = path.extname(editor.document.uri.fsPath).toLowerCase();
+        if (ext === '.js' || ext === '.ts') {
+            return editor.document.uri;
+        }
+    }
+
+    const workspaceRoot = (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0)
+        ? vscode.workspace.workspaceFolders[0].uri
+        : undefined;
+
+    const options = {
+        canSelectMany: false,
+        openLabel: 'Select Entry File',
+        filters: {
+            'JavaScript/TypeScript': ['js', 'ts']
+        },
+        defaultUri: workspaceRoot
+    };
+
+    const fileUri = await vscode.window.showOpenDialog(options);
+    if (!fileUri || !fileUri[0]) {
+        return undefined;
+    }
+
+    return fileUri[0];
+}
+
+async function ensureAnemosLaunchConfig(workspaceFolder, targetUri) {
+    const vscodeDir = path.join(workspaceFolder.uri.fsPath, '.vscode');
+    fs.mkdirSync(vscodeDir, { recursive: true });
+
+    const launchJsonPath = path.join(vscodeDir, 'launch.json');
+    const targetRelativePath = toPosixPath(path.relative(workspaceFolder.uri.fsPath, targetUri.fsPath));
+
+    let launchObject;
+    let existingText;
+
+    if (fs.existsSync(launchJsonPath)) {
+        existingText = fs.readFileSync(launchJsonPath, 'utf8');
+        const errors = [];
+        launchObject = jsonc.parse(existingText, errors, { allowTrailingComma: true });
+        if (errors.length > 0 || !launchObject || typeof launchObject !== 'object') {
+            throw new Error('Existing launch.json could not be parsed as JSON.');
+        }
+    } else {
+        launchObject = { version: '0.2.0', configurations: [] };
+    }
+
+    if (!launchObject.version) {
+        launchObject.version = '0.2.0';
+    }
+
+    if (!Array.isArray(launchObject.configurations)) {
+        launchObject.configurations = [];
+    }
+
+    const alreadyHasAnemos = launchObject.configurations.some(c => c && typeof c === 'object' && c.type === 'anemos');
+    if (alreadyHasAnemos) {
+        return false;
+    }
+
+    launchObject.configurations.push({
+        type: 'anemos',
+        request: 'launch',
+        name: 'Anemos: Run Selected File',
+        program: targetRelativePath
+    });
+
+    const newText = JSON.stringify(launchObject, null, 4) + '\n';
+    fs.writeFileSync(launchJsonPath, newText, 'utf8');
+    return true;
+}
+
+function toPosixPath(value) {
+    return value.split(path.sep).join('/');
 }
 
 async function ensureAnemosBinary(context) {

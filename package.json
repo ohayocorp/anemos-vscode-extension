@@ -16,6 +16,9 @@
     "activationEvents": [
         "*"
     ],
+    "dependencies": {
+        "jsonc-parser": "^3.3.1"
+    },
     "contributes": {
         "typescriptServerPlugins": [
             {
@@ -25,15 +28,69 @@
         ],
         "commands": [
             {
-                "command": "anemos.build",
-                "title": "Anemos: Build"
+                "command": "anemos.addLaunchConfig",
+                "title": "Anemos: Add launch.json Configuration"
             }
         ],
+        "menus": {
+            "explorer/context": [
+                {
+                    "command": "anemos.addLaunchConfig",
+                    "when": "resourceExtname == .js || resourceExtname == .ts",
+                    "group": "navigation"
+                }
+            ]
+        },
         "keybindings": [
             {
                 "command": "anemos.build",
                 "key": "ctrl+e ctrl+a",
                 "mac": "cmd+e cmd+a"
+            }
+        ],
+        "debuggers": [
+            {
+                "type": "anemos",
+                "label": "Anemos",
+                "languages": [
+                    "javascript",
+                    "typescript"
+                ],
+                "configurationAttributes": {
+                    "launch": {
+                        "required": [
+                            "program"
+                        ],
+                        "properties": {
+                            "program": {
+                                "type": "string",
+                                "description": "Workspace-relative path to the JS/TS entry file to run with Anemos."
+                            },
+                            "cwd": {
+                                "type": "string",
+                                "description": "Working directory used when invoking Anemos."
+                            },
+                            "args": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Additional arguments passed to Anemos."
+                            }
+                        }
+                    }
+                },
+                "configurationSnippets": [
+                    {
+                        "label": "Anemos: Run current file",
+                        "description": "Run the current file with Anemos",
+                        "body": {
+                            "type": "anemos",
+                            "request": "launch",
+                            "name": "Anemos: Run current file"
+                        }
+                    }
+                ]
             }
         ]
     }

@@ -1,2 +1,4 @@
 .anemos-types
 *.vsix
+node_modules
+!node_modules/anemos-typescript-plugin
